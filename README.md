@@ -1,4 +1,4 @@
-# FacultyAI - SVCE Portal
+# FacultyAI - SRYS Portal
 
 A faculty-facing institutional knowledge assistant based on the supplied project abstract and portal wireframes. The first implementation includes the responsive dashboard, document source table, upload progress state, RAG chat surface, retrieved-source highlighting, and local API contracts.
 
