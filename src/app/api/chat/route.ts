@@ -1,20 +1,79 @@
 import { NextResponse } from "next/server";
-
-const retrievedSources = [
-  { document: "Exam Postponement Circular - June.pdf", page: 3, similarity: 0.97, snippet: "...postponement may be declared by the Controller of Examinations with prior approval from the Academic Council. A minimum notice period of 72 hours must be maintained..." },
-  { document: "Academic Regulations 2024-25.pdf", page: 88, similarity: 0.91, snippet: "...rescheduled examinations shall be conducted within fourteen (14) working days of the original scheduled date..." },
-  { document: "Academic Regulations 2024-25.pdf", page: 89, similarity: 0.84, snippet: "...natural calamities affecting thirty percent or more of the enrolled student population qualify as force majeure events..." },
-];
+import { getEmbedding, generateGroundedAnswer } from "@/lib/gemini";
+import { rankChunks } from "@/lib/vector";
+import { getAllChunks, getWorkspaceSettings } from "@/lib/firebase";
+import {
+  getCachedResponse,
+  setCachedResponse,
+  recordQueryMetrics,
+} from "@/lib/redis";
 
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({}));
-  const question = typeof body.question === "string" ? body.question.trim() : "";
-  if (!question) return NextResponse.json({ error: "A question is required." }, { status: 400 });
+  const startTime = Date.now();
 
-  return NextResponse.json({
-    answer: "Based on the indexed institutional documents, the answer is grounded in the retrieved examination regulations and circulars.",
-    sources: retrievedSources,
-    query: question,
-    grounded: true,
-  });
+  try {
+    const body = await request.json().catch(() => ({}));
+    const question = typeof body.question === "string" ? body.question.trim() : "";
+
+    if (!question) {
+      return NextResponse.json({ error: "A question is required." }, { status: 400 });
+    }
+
+    // 1. Check Upstash Redis Cache
+    const cached = await getCachedResponse<any>(question);
+    if (cached) {
+      const latency = Date.now() - startTime;
+      await recordQueryMetrics(latency);
+      return NextResponse.json({
+        ...cached,
+        cached: true,
+        latencyMs: latency,
+      });
+    }
+
+    // 2. Fetch active workspace settings
+    const settings = await getWorkspaceSettings();
+
+    // 3. Generate query embedding with Gemini
+    const queryEmbedding = await getEmbedding(question);
+
+    // 4. Fetch all stored chunks
+    const allChunks = await getAllChunks();
+
+    // 5. Match and rank relevant chunks based on vector cosine similarity
+    const topSources = rankChunks(
+      queryEmbedding,
+      allChunks,
+      settings.retrievalDepth || 3,
+      question
+    );
+
+    // 6. Generate grounded response using Gemini 1.5 Flash
+    const answer = await generateGroundedAnswer(question, topSources, {
+      strict: settings.strictAnswers,
+      grounding: settings.grounding,
+    });
+
+    const latencyMs = Date.now() - startTime;
+    await recordQueryMetrics(latencyMs);
+
+    const result = {
+      answer,
+      sources: topSources,
+      query: question,
+      grounded: settings.grounding,
+      latencyMs,
+    };
+
+    // Cache successful answer in Upstash Redis
+    await setCachedResponse(question, result, 3600);
+
+    return NextResponse.json(result);
+  } catch (error: any) {
+    console.error("Chat API error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to generate answer." },
+      { status: 500 }
+    );
+  }
 }
