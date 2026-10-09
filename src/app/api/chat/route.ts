@@ -48,8 +48,8 @@ export async function POST(request: Request) {
       question
     );
 
-    // 6. Generate grounded response using Gemini 1.5 Flash
-    const answer = await generateGroundedAnswer(question, topSources, {
+    // 6. Generate grounded response using Gemini AI
+    const groundedResult = await generateGroundedAnswer(question, topSources, {
       strict: settings.strictAnswers,
       grounding: settings.grounding,
     });
@@ -58,11 +58,14 @@ export async function POST(request: Request) {
     await recordQueryMetrics(latencyMs);
 
     const result = {
-      answer,
+      answer: groundedResult.answer,
       sources: topSources,
       query: question,
       grounded: settings.grounding,
       latencyMs,
+      tokensCount: groundedResult.candidatesTokenCount || Math.max(1, Math.round(groundedResult.answer.split(/\s+/).length * 1.3)),
+      promptTokens: groundedResult.promptTokenCount || Math.max(1, Math.round(question.split(/\s+/).length * 1.3)),
+      totalTokens: groundedResult.totalTokenCount,
     };
 
     // Cache successful answer in Upstash Redis

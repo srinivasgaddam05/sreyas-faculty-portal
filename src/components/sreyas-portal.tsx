@@ -1,6 +1,9 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, ReactNode, useEffect, useMemo, useState, useRef } from "react";
+import ReactMarkdown from 'react-markdown';
+import { motion } from 'framer-motion';
+
 import {
   Activity,
   Check,
@@ -34,7 +37,15 @@ type MessageItem = {
   content: string;
   time: string;
   sourcesCount?: number;
+  tokensCount?: number;
+  latencyMs?: number;
 };
+
+function countTokens(text: string): number {
+  if (!text || !text.trim()) return 0;
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(words * 1.3));
+}
 
 const acceptedFiles = ".pdf,.docx,.xlsx,.txt";
 
@@ -326,6 +337,7 @@ function Dashboard({
   onRefreshMetrics: () => void;
 }) {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [isLoadingDocs, setIsLoadingDocs] = useState(true);
   const [filter, setFilter] = useState("");
   const [progress, setProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
@@ -337,6 +349,7 @@ function Dashboard({
   const [notice, setNotice] = useState("");
 
   const fetchDocs = async () => {
+    setIsLoadingDocs(true);
     try {
       const res = await fetch("/api/documents");
       if (res.ok) {
@@ -345,6 +358,8 @@ function Dashboard({
       }
     } catch (err) {
       console.warn("Docs fetch failed:", err);
+    } finally {
+      setIsLoadingDocs(false);
     }
   };
 
@@ -500,24 +515,28 @@ function Dashboard({
           label="Total documents"
           value={String(metrics.totalDocuments)}
           sub={subBreakdown}
+          progress={metrics.totalDocuments > 0 ? Math.min(100, metrics.totalDocuments * 15) : 10}
         />
         <Metric
           icon={<Activity />}
           label="Indexed chunks"
           value={String(metrics.totalChunks)}
           sub="vector embeddings"
+          progress={metrics.totalChunks > 0 ? Math.min(100, Math.round((metrics.totalChunks / 200) * 100)) : 10}
         />
         <Metric
           icon={<Clock3 />}
           label="Avg. query time"
           value={metrics.avgQueryTimeMs > 0 ? `${metrics.avgQueryTimeMs}ms` : "-"}
           sub="last 7 days"
+          progress={metrics.avgQueryTimeMs > 0 ? Math.max(15, Math.min(100, 100 - Math.round(metrics.avgQueryTimeMs / 10))) : 85}
         />
         <Metric
           icon={<MessageSquare />}
           label="Queries served"
           value={String(metrics.queriesServedThisMonth)}
           sub="this month"
+          progress={metrics.queriesServedThisMonth > 0 ? Math.min(100, metrics.queriesServedThisMonth * 5) : 15}
         />
       </div>
 
@@ -608,7 +627,14 @@ function Dashboard({
             </tr>
           </thead>
           <tbody>
-            {filteredDocuments.length === 0 ? (
+            {isLoadingDocs ? (
+              <tr>
+                <td colSpan={6} style={{ textAlign: "center", padding: "40px 20px" }}>
+                  <div style={{ display: 'inline-block', width: '20px', height: '20px', border: '2px solid #e2e8f0', borderTopColor: 'var(--green)', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                  <div style={{ color: "#8a9491", marginTop: '10px' }}>Loading documents...</div>
+                </td>
+              </tr>
+            ) : filteredDocuments.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ textAlign: "center", padding: "40px 20px", color: "#8a9491" }}>
                   No institutional documents uploaded yet. Upload your first PDF, DOCX, XLSX, or TXT file above.
@@ -673,12 +699,16 @@ function Metric({
   label,
   value,
   sub,
+  progress,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
   sub: string;
+  progress?: number;
 }) {
+  const clampProgress = Math.max(5, Math.min(100, progress ?? 50));
+
   return (
     <div className="metric">
       <div className="metric-top">
@@ -688,6 +718,9 @@ function Metric({
       </div>
       <div className="metric-value">{value}</div>
       <div className="metric-sub">{sub}</div>
+      <div className="metric-progress-track">
+        <div className="metric-progress-fill" style={{ width: `${clampProgress}%` }} />
+      </div>
     </div>
   );
 }
@@ -920,6 +953,7 @@ function Chat({ onRefreshMetrics }: { onRefreshMetrics: () => void }) {
       role: "user",
       content: nextQuestion,
       time: timeStr,
+      tokensCount: countTokens(nextQuestion),
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -944,6 +978,8 @@ function Chat({ onRefreshMetrics }: { onRefreshMetrics: () => void }) {
         text: s.snippet,
       }));
 
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       setLiveSources(sources);
       setSelectedSource(0);
 
@@ -953,6 +989,8 @@ function Chat({ onRefreshMetrics }: { onRefreshMetrics: () => void }) {
         content: data.answer || "No response could be generated.",
         time: formatCurrentTime(),
         sourcesCount: sources.length,
+        latencyMs: data.latencyMs,
+        tokensCount: data.tokensCount || countTokens(data.answer),
       };
 
       setMessages((prev) => [...prev, aiMsg]);
@@ -991,49 +1029,57 @@ function Chat({ onRefreshMetrics }: { onRefreshMetrics: () => void }) {
           <div className="chat-header">
             <div>
               <h2>Chat Assistant</h2>
-              <p>RAG • Firestore Vector Retrieval • Gemini 3.8 Flash</p>
+              <p>Gemini 3.8 Flash</p>
             </div>
             <span className="model-badge">● Model active</span>
           </div>
 
           <div className="chat-stream" ref={chatStreamRef}>
-            {messages.map((msg) =>
+            {messages.map((msg, index) =>
               msg.role === "user" ? (
-                <div key={msg.id} className="message user">
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3 }}
+                  key={msg.id} 
+                  className="message user"
+                >
                   <div className="bubble">{msg.content}</div>
-                  <div className="message-time">{msg.time}</div>
-                </div>
-              ) : (
-                <div key={msg.id} className="message">
-                  <div className="ai-card">
-                    {msg.content.split("\n\n").map((para, pIdx) => {
-                      if (para.match(/^\d\./m)) {
-                        const items = para.split("\n");
-                        return (
-                          <ol key={pIdx}>
-                            {items.map((item, iIdx) => (
-                              <li key={iIdx}>{item.replace(/^\d+\.\s*/, "")}</li>
-                            ))}
-                          </ol>
-                        );
-                      }
-                      return <p key={pIdx}>{para}</p>;
-                    })}
-                    <div className="message-time">
-                      {msg.time}
-                      {msg.sourcesCount !== undefined &&
-                        ` • ${msg.sourcesCount} sources retrieved from Firestore`}
-                    </div>
+                  <div className="message-footer user-footer">
+                    <span>{msg.time}</span>
+                    <span className="footer-dot">•</span>
+                    <span>{msg.tokensCount || countTokens(msg.content)} tokens</span>
                   </div>
-                </div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.4 }}
+                  key={msg.id} 
+                  className="message"
+                >
+                  <div className="ai-card">
+                    <StreamingMessage
+                      content={msg.content}
+                      isLatest={index === messages.length - 1 && msg.id.startsWith('ai_')}
+                      time={msg.time}
+                      sourcesCount={msg.sourcesCount}
+                      latencyMs={msg.latencyMs}
+                      tokensCount={msg.tokensCount}
+                    />
+                  </div>
+                </motion.div>
               )
             )}
             {isSending && (
-              <div className="message">
-                <div className="ai-card">
-                  <p>Searching Firestore knowledge base and generating grounded answer with Gemini...</p>
-                </div>
-              </div>
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                className="message"
+              >
+                <ThinkingProgress />
+              </motion.div>
             )}
           </div>
 
@@ -1157,5 +1203,160 @@ function Chat({ onRefreshMetrics }: { onRefreshMetrics: () => void }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ThinkingProgress() {
+  const [elapsed, setElapsed] = useState(0);
+  const [currentStep, setCurrentStep] = useState(0);
+
+  useEffect(() => {
+    const startTime = Date.now();
+    const timer = setInterval(() => {
+      const ms = Date.now() - startTime;
+      setElapsed(ms);
+      if (ms < 800) setCurrentStep(0);
+      else if (ms < 1600) setCurrentStep(1);
+      else if (ms < 2500) setCurrentStep(2);
+      else setCurrentStep(3);
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  const stages = [
+    { title: "Analyzing query & generating embeddings", detail: "Gemini Embedding API" },
+    { title: "Retrieving vector chunks from Firestore", detail: "Cosines & similarity ranking" },
+    { title: "Evaluating relevance & grounding context", detail: "Filtering top passages" },
+    { title: "Synthesizing answer with Gemini AI", detail: "Generating complete output" },
+  ];
+
+  return (
+    <div className="ai-card thinking-card-multi">
+      <div className="thinking-header">
+        <div className="thinking-title">
+          <Sparkles className="spin" size={14} />
+          <span>SREYAS AI Reasoning</span>
+        </div>
+        <div className="thinking-timer">
+          <Clock3 size={12} />
+          <span>{(elapsed / 1000).toFixed(1)}s</span>
+        </div>
+      </div>
+      <div className="thinking-stages">
+        {stages.map((stage, idx) => {
+          const isDone = idx < currentStep;
+          const isActive = idx === currentStep;
+          return (
+            <div
+              key={idx}
+              className={`thinking-stage ${isDone ? "done" : ""} ${isActive ? "active" : ""}`}
+            >
+              <div className="stage-icon">
+                {isDone ? (
+                  <CheckCircle2 size={13} className="stage-check" />
+                ) : isActive ? (
+                  <span className="active-dot" />
+                ) : (
+                  <span className="pending-dot" />
+                )}
+              </div>
+              <div className="stage-content">
+                <span className="stage-title">{stage.title}</span>
+                <span className="stage-detail">{stage.detail}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StreamingMessage({
+  content,
+  isLatest,
+  time,
+  sourcesCount,
+  latencyMs,
+  tokensCount,
+}: {
+  content: string;
+  isLatest: boolean;
+  time: string;
+  sourcesCount?: number;
+  latencyMs?: number;
+  tokensCount?: number;
+}) {
+  const [displayedContent, setDisplayedContent] = useState(isLatest ? "" : content);
+  const [isStreaming, setIsStreaming] = useState(isLatest);
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    if (!isLatest) {
+      setDisplayedContent(content);
+      setIsStreaming(false);
+      return;
+    }
+
+    const startTime = Date.now();
+    let index = 0;
+    setDisplayedContent("");
+    setIsStreaming(true);
+
+    const charsPerTick = Math.max(1, Math.floor(content.length / 50));
+
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setElapsedMs(now - startTime);
+      index += charsPerTick;
+      if (index >= content.length) {
+        setDisplayedContent(content);
+        setIsStreaming(false);
+        clearInterval(timer);
+      } else {
+        setDisplayedContent(content.substring(0, index));
+      }
+    }, 20);
+
+    return () => clearInterval(timer);
+  }, [content, isLatest]);
+
+  const liveTokens = countTokens(displayedContent);
+  const finalTokens = tokensCount || countTokens(content);
+  const displayTime = latencyMs
+    ? `${(latencyMs / 1000).toFixed(1)}s`
+    : elapsedMs > 0
+    ? `${(elapsedMs / 1000).toFixed(1)}s`
+    : "0.8s";
+
+  return (
+    <>
+      <ReactMarkdown>{displayedContent}</ReactMarkdown>
+      <div className="message-footer ai-footer">
+        {isStreaming ? (
+          <>
+            <span className="live-dot-inline" />
+            <span>{(elapsedMs / 1000).toFixed(1)}s elapsed</span>
+            <span className="footer-dot">•</span>
+            <span>{liveTokens} tokens generated</span>
+          </>
+        ) : (
+          <>
+            <span>{time}</span>
+            <span className="footer-dot">•</span>
+            <span>{displayTime} taken</span>
+            <span className="footer-dot">•</span>
+            <span>{finalTokens} tokens</span>
+            {sourcesCount !== undefined && (
+              <>
+                <span className="footer-dot">•</span>
+                <span>{sourcesCount} sources retrieved</span>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </>
   );
 }

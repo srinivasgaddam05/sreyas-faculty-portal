@@ -50,6 +50,13 @@ export async function getBatchEmbeddings(texts: string[]): Promise<number[][]> {
   return results;
 }
 
+export type GroundedAnswerResult = {
+  answer: string;
+  candidatesTokenCount?: number;
+  promptTokenCount?: number;
+  totalTokenCount?: number;
+};
+
 /**
  * Calls gemini-3.8-flash to generate real, grounded institutional answers
  * based strictly on the retrieved source passages from uploaded documents.
@@ -58,11 +65,14 @@ export async function generateGroundedAnswer(
   question: string,
   sources: SourceCitation[],
   options: { strict?: boolean; grounding?: boolean } = {}
-): Promise<string> {
+): Promise<GroundedAnswerResult> {
   const { strict = true, grounding = true } = options;
 
   if (sources.length === 0) {
-    return "There are no relevant institutional documents in the knowledge base to answer this question. Please upload institutional documents (PDF, DOCX, XLSX, TXT) via the Document Upload section.";
+    return {
+      answer:
+        "There are no relevant institutional documents in the knowledge base to answer this question. Please upload institutional documents (PDF, DOCX, XLSX, TXT) via the Document Upload section.",
+    };
   }
 
   const contextText = sources
@@ -89,7 +99,7 @@ ${
 }
 
 When stating policies, regulations, or rules, cite the relevant document name and page number from the context.
-Format your answer cleanly with structured paragraphs, numbered lists, or bullet points.
+Format your answer cleanly with structured paragraphs, numbered lists, or bullet points. Provide full, detailed, and complete explanations without truncating or skipping details.
 
 ---
 RETRIEVED INSTITUTIONAL CONTEXT:
@@ -114,7 +124,7 @@ GROUNDED INSTITUTIONAL ANSWER:`;
         ],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 16384,
         },
       }),
     });
@@ -122,18 +132,34 @@ GROUNDED INSTITUTIONAL ANSWER:`;
     if (!res.ok) {
       const err = await res.text();
       console.error("Gemini generateContent error:", err);
-      return "An error occurred while contacting the AI model. Please verify your connection or try again.";
+      return {
+        answer:
+          "An error occurred while contacting the AI model. Please verify your connection or try again.",
+      };
     }
 
     const data = await res.json();
     const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const usage = data.usageMetadata;
+
     if (candidateText && candidateText.trim()) {
-      return candidateText.trim();
+      return {
+        answer: candidateText.trim(),
+        candidatesTokenCount: usage?.candidatesTokenCount,
+        promptTokenCount: usage?.promptTokenCount,
+        totalTokenCount: usage?.totalTokenCount,
+      };
     }
 
-    return "No response could be generated for this question from the indexed context.";
+    return {
+      answer:
+        "No response could be generated for this question from the indexed context.",
+    };
   } catch (error) {
     console.error("Gemini generation error:", error);
-    return "Failed to generate answer from the knowledge base. Please try again.";
+    return {
+      answer:
+        "Failed to generate answer from the knowledge base. Please try again.",
+    };
   }
 }
